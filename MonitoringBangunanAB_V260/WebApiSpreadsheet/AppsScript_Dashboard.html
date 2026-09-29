@@ -1,0 +1,2830 @@
+<!DOCTYPE html>
+<!--
+  SALINAN HMI UNTUK FIRMWARE V2.5.0
+  Lokasi acuan: Program Tes/MonitoringBangunanAB_V250/WebApiSpreadsheet
+  Pasangan file: AppsScript_Dashboard_Monitoring.gs (V2.5.0).
+  Tombol Link API (pengaman 2 langkah) mulai di V1.6.0.
+  Kolom versi target MULAI di V1.7.0, tombol terpisah dari Link API.
+  Tombol Pengaturan (usia, low bat, interval) MULAI di V1.8.0.
+  Pola LED boot/AP/kirim/OTA di firmware: V1.9.0.
+  Mode gain VEML7700 (satu nilai untuk semua Node A) di Pengaturan: V2.3.0.
+  Jumlah alat per rombongan kirim (1–25, default 3) dan jeda antar
+  rombongan (1–120 s, default 10) di Pengaturan: V2.5.0.
+  Semua nilai Pengaturan diambil node saat daya baru dinyalakan.
+  V2.5.0: file ini dipakai sebagai TEMPLATE (createTemplateFromFile).
+  Data pertama disisipkan lewat scriptlet initialJson, dan poll tidak
+  mengirim permintaan baru selama permintaan sebelumnya belum selesai.
+  V2.5.0 (tampilan): logo gedung SVG, tile ID node berwarna per jenis
+  (A biru, B indigo), chip nilai, bar KPI, grafik 2 kolom
+  dengan area + ringkasan, dan dialog Pengaturan dipisah per grup.
+  Diuji dulu lewat AppsScript_Dashboard_UITest.html sebelum dipindah ke sini.
+  V2.6.0: indikator bar baterai di kartu dihapus, nilai "Baterai x.xx V"
+          ditampilkan dalam chip berlatar seperti Lux.
+-->
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HMI Monitoring Bangunan</title>
+  <style>
+    /*
+      UI TES V2.5.0 — tampilan baru, tetap ringan:
+      - Tanpa library, tanpa font eksternal, tanpa gambar.
+      - Gradient latar statis (digambar sekali), bukan animasi.
+      - Efek hover hanya transform/opacity (dikerjakan GPU, tidak memicu layout).
+      - Tidak ada animasi saat kartu di-render ulang tiap poll.
+    */
+    :root {
+      --bg: #070b14;
+      --bg-elev: #0d1322;
+      --panel: #111a2c;
+      --panel-2: #16213a;
+      --line: #25324d;
+      --line-soft: #1b2740;
+      --text: #eef3ff;
+      --muted: #8b9bb8;
+      --ok: #34d399;
+      --ok-bg: rgba(52, 211, 153, 0.12);
+      --warn: #fbbf24;
+      --warn-bg: rgba(251, 191, 36, 0.12);
+      --err: #f87171;
+      --err-bg: rgba(248, 113, 113, 0.12);
+      --off: #94a3b8;
+      --off-bg: rgba(148, 163, 184, 0.12);
+      --accent: #38bdf8;
+      --accent-2: #2563eb;
+      --danger: #dc2626;
+      --radius: 14px;
+      --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px rgba(0, 0, 0, 0.25);
+      --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--text);
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 500px at 10% -10%, rgba(37, 99, 235, 0.18), transparent 60%),
+        radial-gradient(900px 420px at 100% 0%, rgba(56, 189, 248, 0.10), transparent 60%),
+        var(--bg);
+      background-attachment: fixed;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ========== TOP BAR ========== */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 24px;
+      background: rgba(10, 15, 27, 0.88);
+      border-bottom: 1px solid var(--line-soft);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .logo {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #38bdf8, #2563eb 60%, #7c3aed);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+      box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+    }
+
+    .logo svg {
+      width: 26px;
+      height: 26px;
+      display: block;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .brand p {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .live {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 7px 12px;
+      border: 1px solid var(--line-soft);
+      border-radius: 999px;
+      background: rgba(13, 19, 34, 0.8);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18);
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 4px;
+      background: rgba(7, 11, 20, 0.7);
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+    }
+
+    .nav-tabs button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 14px;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+
+    .nav-tabs button:hover { color: var(--text); }
+
+    .nav-tabs button.active {
+      background: linear-gradient(180deg, #1d2a47, #16213a);
+      color: var(--text);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.12s ease, filter 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+
+    .btn:hover:not(:disabled) { filter: brightness(1.12); }
+    .btn:active:not(:disabled) { transform: translateY(1px); }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: linear-gradient(180deg, #3b82f6, #2563eb);
+      color: #fff;
+      box-shadow: 0 6px 16px rgba(37, 99, 235, 0.3);
+    }
+    .btn-ghost {
+      background: rgba(255, 255, 255, 0.02);
+      color: #b6c3dc;
+      border: 1px solid var(--line);
+    }
+    .btn-ghost:hover:not(:disabled) { color: var(--text); border-color: #3a4a6b; }
+    .btn-danger { background: linear-gradient(180deg, #ef4444, #dc2626); color: #fff; }
+    .btn-danger-outline {
+      background: transparent;
+      color: #fca5a5;
+      border: 1px solid rgba(220, 38, 38, 0.45);
+    }
+
+    main { padding: 24px 24px 56px; max-width: 1320px; margin: 0 auto; }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 12px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+    }
+
+    .section-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* ========== KPI ========== */
+    /* 5 KPI satu baris selama lebar cukup (min 140 px per kotak). */
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    /* Warna tiap KPI lewat variabel --kpi, bar bawah = porsi dari total node. */
+    .kpi {
+      --kpi: var(--accent);
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)) , var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      padding: 14px 16px 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .kpi::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--kpi);
+      opacity: 0.9;
+    }
+
+    .kpi.k-total { --kpi: var(--accent); }
+    .kpi.k-ok { --kpi: var(--ok); }
+    .kpi.k-warn { --kpi: var(--warn); }
+    .kpi.k-err { --kpi: var(--err); }
+    .kpi.k-off { --kpi: var(--off); }
+
+    .kpi span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+    }
+
+    .kpi span::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--kpi);
+    }
+
+    .kpi strong {
+      display: block;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.5px;
+      font-weight: 750;
+      color: var(--kpi);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .kpi.k-total strong { color: var(--text); }
+
+    .kpi-bar {
+      margin-top: 10px;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    .kpi-bar i {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: inherit;
+      background: var(--kpi);
+      transition: width 0.4s ease;
+    }
+
+    /* ========== FILTERS ========== */
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .filters button {
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+    }
+
+    .filters button:hover { color: var(--text); border-color: #3a4a6b; }
+
+    .filters button.active {
+      background: rgba(37, 99, 235, 0.22);
+      border-color: #3b82f6;
+      color: #dbeafe;
+    }
+
+    .filter-count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* ========== CARDS ========== */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 14px;
+    }
+
+    /* Warna status lewat variabel --c: strip kiri dan badge. */
+    .card {
+      --c: var(--off);
+      --c-bg: var(--off-bg);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)), var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      padding: 14px 14px 12px 16px;
+      min-height: 150px;
+      cursor: pointer;
+      box-shadow: var(--shadow);
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: var(--c);
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: #33456a;
+    }
+
+    .card.ok { --c: var(--ok); --c-bg: var(--ok-bg); }
+    .card.warn { --c: var(--warn); --c-bg: var(--warn-bg); }
+    .card.err { --c: var(--err); --c-bg: var(--err-bg); }
+    .card.off { --c: var(--off); --c-bg: var(--off-bg); }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .id { font-size: 18px; font-weight: 750; letter-spacing: 0.2px; }
+    .jenis { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+    /*
+      Warna pembeda per JENIS node (bukan status):
+      Node A (Iluminansi) = biru baja, tile berisi ID lengkap (contoh "A-01").
+      Node B (IAQ)        = indigo, tile berisi ID lengkap (contoh "B-01").
+      Tile memakai isi warna solid + teks putih agar label ID terang dan mudah dibaca.
+      --t      = warna teks nama jenis di samping tile.
+      --t-fill = isi tile (gradasi tipis dari terang ke gelap).
+      --t-line = garis tepi tile.
+      Status tetap ditunjukkan strip kiri + badge, jadi kedua warna tidak bentrok.
+    */
+    .card.type-a {
+      --t: #93c5fd;
+      --t-fill: linear-gradient(135deg, #3b82f6, #1d4ed8);
+      --t-line: rgba(147, 197, 253, 0.50);
+      --t-glow: rgba(59, 130, 246, 0.22);
+    }
+    .card.type-b {
+      --t: #c7d2fe;
+      --t-fill: linear-gradient(135deg, #6366f1, #4338ca);
+      --t-line: rgba(199, 210, 254, 0.50);
+      --t-glow: rgba(99, 102, 241, 0.22);
+    }
+
+    .node-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    /* Tile ID node. Lebar mengikuti teks, min-width menjaga semua tile seragam untuk ID 4 karakter. */
+    .node-ico {
+      min-width: 64px;
+      height: 36px;
+      padding: 0 10px;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      color: #fff;
+      background: var(--t-fill, #475569);
+      border: 1px solid var(--t-line, rgba(148, 163, 184, 0.35));
+      box-shadow: 0 3px 10px var(--t-glow, rgba(0, 0, 0, 0.3));
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .card.type-a .jenis,
+    .card.type-b .jenis {
+      color: var(--t);
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 0;
+    }
+
+    /*
+      Kartu sempit + badge panjang (misal "BELUM ADA DATA"):
+      nama jenis dipotong dengan "…" agar tidak tertimpa badge.
+    */
+    .node-head .jenis {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .row > .badge { flex-shrink: 0; }
+
+    /* Node yang belum ada data / offline: tile diredupkan supaya node aktif lebih menonjol. */
+    .card.off .node-ico { opacity: 0.45; box-shadow: none; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 4px 9px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      background: var(--c-bg, var(--off-bg));
+      color: var(--c, #cbd5e1);
+    }
+
+    .badge i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .nilai {
+      margin-top: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #d7e4ff;
+      min-height: 38px;
+    }
+
+    /* Nilai sensor dipecah jadi chip: "Lux 312", "T 24.1 C", dst. */
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+      min-height: 30px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      padding: 5px 9px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line-soft);
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chip b {
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .chip.empty {
+      background: transparent;
+      border-style: dashed;
+    }
+
+    .card-foot {
+      margin-top: auto;
+      padding-top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Baterai di kartu: nilai saja (tanpa bar), memakai gaya .chip seperti Lux. */
+    .batt {
+      white-space: nowrap;
+    }
+
+    .meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* ========== CHARTS ========== */
+    /* Badge di dialog detail memakai kelas status langsung. */
+    .badge.ok { --c: var(--ok); --c-bg: var(--ok-bg); }
+    .badge.warn { --c: var(--warn); --c-bg: var(--warn-bg); }
+    .badge.err { --c: var(--err); --c-bg: var(--err-bg); }
+    .badge.off { --c: #cbd5e1; --c-bg: var(--off-bg); }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 14px;
+    }
+
+    .chart-panel {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)), var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .chart-grid .chart-panel { margin-bottom: 0; }
+
+    .chart-panel h3 {
+      margin: 0 0 4px;
+      font-size: 14px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .chart-panel h3 .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    /* Ringkasan angka di atas grafik: terakhir / min / maks / rata-rata. */
+    .chart-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 16px;
+      margin: 2px 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chart-stats b {
+      color: var(--text);
+      font-weight: 700;
+      margin-left: 4px;
+    }
+
+    .toolbar.chart-toolbar {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)), var(--panel);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      justify-content: flex-start;
+      box-shadow: var(--shadow);
+    }
+
+    .chart-panel .sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+
+    .toolbar input.field[type="date"],
+    .toolbar select.field {
+      min-width: 118px;
+    }
+
+    .toolbar .field-narrow {
+      width: 88px;
+      min-width: 88px;
+    }
+
+    .chart-wrap {
+      width: 100%;
+      height: 220px;
+      position: relative;
+      cursor: crosshair;
+    }
+
+    .chart-wrap svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .chart-tip {
+      position: absolute;
+      z-index: 2;
+      pointer-events: none;
+      display: none;
+      background: rgba(12, 18, 32, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--text);
+      white-space: nowrap;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      transform: translate(-50%, calc(-100% - 10px));
+    }
+
+    .chart-tip strong {
+      display: block;
+      color: #fff;
+      font-weight: 650;
+      margin-bottom: 2px;
+    }
+
+    .chart-tip span {
+      color: var(--muted);
+    }
+
+    .chart-guide {
+      pointer-events: none;
+    }
+
+    .chart-empty {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 40px 0;
+      text-align: center;
+    }
+
+    select.field,
+    input.field {
+      background: var(--bg-elev);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 13px;
+      min-width: 140px;
+      color-scheme: dark;
+      transition: border-color 0.12s ease;
+    }
+
+    select.field:hover,
+    input.field:hover { border-color: #3a4a6b; }
+
+    label.field-label {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* ========== DIALOGS ========== */
+    dialog {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(180deg, #1a2642, #141e33);
+      color: var(--text);
+      width: min(540px, 94vw);
+      padding: 0;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    }
+
+    dialog[open] { animation: dlgIn 0.16s ease-out; }
+
+    @keyframes dlgIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+
+    dialog::backdrop { background: rgba(3, 6, 12, 0.7); }
+
+    .modal-head, .modal-body, .modal-foot {
+      padding: 16px 18px;
+    }
+
+    .modal-head { border-bottom: 1px solid var(--line-soft); }
+    .modal-foot {
+      border-top: 1px solid var(--line-soft);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .warn-box {
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+
+    .warn-box.yellow {
+      background: var(--warn-bg);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      color: #fde68a;
+    }
+
+    .warn-box.red {
+      background: var(--err-bg);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      color: #fecaca;
+    }
+
+    .warn-box.green {
+      background: var(--ok-bg);
+      border: 1px solid rgba(52, 211, 153, 0.35);
+      color: #a7f3d0;
+    }
+
+    .row2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .calib-box {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .calib-box h3 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .calib-box .field-label {
+      margin-top: 8px;
+    }
+
+    .calib-hint {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    /*
+      Dialog Pengaturan dipisah menjadi beberapa grup bernomor.
+      Setiap grup punya judul + tag kapan setting berlaku:
+      - .set-tag.now  = langsung dipakai HMI (hijau)
+      - .set-tag.cold = baru dipakai node setelah daya dimatikan lalu dinyalakan (kuning)
+    */
+    .set-group {
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 12px 14px 14px;
+      margin-top: 12px;
+    }
+
+    .set-group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-bottom: 10px;
+      margin-bottom: 4px;
+      border-bottom: 1px dashed var(--line-soft);
+    }
+
+    .set-group-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .set-group-num {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 800;
+      color: #fff;
+      background: linear-gradient(135deg, #38bdf8, #2563eb);
+    }
+
+    .set-tag {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .set-tag.now { background: var(--ok-bg); color: #6ee7b7; }
+    .set-tag.cold { background: var(--warn-bg); color: #fcd34d; }
+
+    .set-field { margin-top: 12px; }
+
+    /* Jarak antar field dalam satu grup dibuat lebih lega agar label tidak menempel ke hint di atasnya. */
+    .set-field + .set-field { margin-top: 18px; }
+
+    .set-field .hint {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    /* Dua input berdampingan (misal rombongan + jeda). Turun jadi 1 kolom di layar sempit. */
+    .set-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    @media (max-width: 480px) {
+      .set-pair { grid-template-columns: 1fr; }
+    }
+
+    .url-now {
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-all;
+      color: #dbeafe;
+      margin: 0 0 12px;
+    }
+
+    input.confirm-input,
+    select.confirm-input {
+      width: 100%;
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      margin-top: 8px;
+      color-scheme: dark;
+      transition: border-color 0.12s ease;
+    }
+
+    input.confirm-input:focus,
+    select.confirm-input:focus {
+      border-color: var(--accent);
+      outline: none;
+    }
+
+    .check-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-top: 14px;
+      font-size: 13px;
+      color: #dbe4f8;
+      cursor: pointer;
+    }
+
+    .check-row input { margin-top: 3px; }
+
+    .action {
+      background: var(--bg);
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 10px;
+      line-height: 1.5;
+      font-size: 13px;
+      color: #d5e0f7;
+    }
+
+    .toast {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 50;
+      background: linear-gradient(180deg, #1a2642, #141e33);
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      border-radius: 12px;
+      padding: 12px 14px;
+      max-width: min(380px, 90vw);
+      font-size: 13px;
+      display: none;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    }
+
+    .toast.show { display: block; animation: dlgIn 0.16s ease-out; }
+
+    @media (max-width: 560px) {
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .kpi.k-total { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 900px) {
+      .topbar { flex-direction: column; align-items: stretch; padding: 12px 16px; }
+      .top-actions { justify-content: space-between; }
+      main { padding: 16px 14px 48px; }
+      .chart-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Hormati pengaturan OS "kurangi animasi". */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <!-- Ikon gedung (garis putih) digambar ulang sebagai SVG inline:
+           tanpa file gambar dan tanpa request tambahan. -->
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 512 512" fill="none" stroke="currentColor" stroke-width="26" stroke-linejoin="round" stroke-linecap="round">
+          <path d="M98 497V14h214v199"/>
+          <path d="M228 497V213h212v284"/>
+          <path d="M14 497h484"/>
+          <path d="M146 497v-68a19 19 0 0 1 38 0v68"/>
+          <rect x="140" y="45" width="40" height="40" rx="4"/>
+          <rect x="226" y="45" width="40" height="40" rx="4"/>
+          <rect x="140" y="128" width="40" height="40" rx="4"/>
+          <rect x="226" y="128" width="40" height="40" rx="4"/>
+          <rect x="140" y="212" width="40" height="40" rx="4"/>
+          <rect x="140" y="296" width="40" height="40" rx="4"/>
+          <rect x="264" y="246" width="40" height="40" rx="4"/>
+          <rect x="350" y="246" width="40" height="40" rx="4"/>
+          <rect x="264" y="330" width="40" height="40" rx="4"/>
+          <rect x="350" y="330" width="40" height="40" rx="4"/>
+          <rect x="264" y="416" width="40" height="40" rx="4"/>
+          <rect x="350" y="416" width="40" height="40" rx="4"/>
+        </svg>
+      </div>
+      <div>
+        <h1>HMI Monitoring Bangunan</h1>
+        <p>Operasi lapangan · status node &amp; tren sensor</p>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <div class="nav-tabs" role="tablist">
+        <button type="button" class="active" data-view="overview" id="tabOverview">Ringkasan</button>
+        <button type="button" data-view="charts" id="tabCharts">Grafik sensor</button>
+      </div>
+      <div class="live">
+        <span class="dot"></span>
+        <span id="updated">Memuat...</span>
+      </div>
+      <button type="button" class="btn btn-ghost" id="btnScriptUrl">Link API</button>
+      <button type="button" class="btn btn-ghost" id="btnFirmwareVersion">Versi</button>
+      <button type="button" class="btn btn-ghost" id="btnSettings">Pengaturan</button>
+      <button type="button" class="btn btn-danger-outline" id="btnDeleteAll">Hapus semua data</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ========== OVERVIEW ========== -->
+    <section class="view active" id="viewOverview">
+      <section class="kpis">
+        <div class="kpi k-total"><span>Total node</span><strong id="kTotal">0</strong><div class="kpi-bar"><i id="kbTotal"></i></div></div>
+        <div class="kpi k-ok"><span>Normal</span><strong id="kOk">0</strong><div class="kpi-bar"><i id="kbOk"></i></div></div>
+        <div class="kpi k-warn"><span>Terlambat</span><strong id="kWarn">0</strong><div class="kpi-bar"><i id="kbWarn"></i></div></div>
+        <div class="kpi k-err"><span>Perlu lapangan</span><strong id="kErr">0</strong><div class="kpi-bar"><i id="kbErr"></i></div></div>
+        <div class="kpi k-off"><span>Offline</span><strong id="kOff">0</strong><div class="kpi-bar"><i id="kbOff"></i></div></div>
+      </section>
+
+      <div class="toolbar">
+        <section class="filters">
+          <button class="active" data-filter="all">Semua</button>
+          <button data-filter="A">Iluminansi</button>
+          <button data-filter="B">IAQ</button>
+          <button data-filter="problem">Bermasalah</button>
+        </section>
+        <span class="filter-count" id="filterCount"></span>
+      </div>
+
+      <section class="grid" id="grid"></section>
+    </section>
+
+    <!-- ========== CHARTS ========== -->
+    <section class="view" id="viewCharts">
+      <div class="toolbar chart-toolbar">
+        <div>
+          <label class="field-label" for="chartNode">Node</label>
+          <select class="field" id="chartNode"></select>
+        </div>
+        <div>
+          <label class="field-label" for="chartDateFrom">Tanggal dari</label>
+          <input class="field" type="date" id="chartDateFrom">
+        </div>
+        <div>
+          <label class="field-label" for="chartHourFrom">Jam mulai</label>
+          <select class="field field-narrow" id="chartHourFrom"></select>
+        </div>
+        <div>
+          <label class="field-label" for="chartDateTo">Tanggal sampai</label>
+          <input class="field" type="date" id="chartDateTo">
+        </div>
+        <div>
+          <label class="field-label" for="chartHourTo">Jam selesai</label>
+          <select class="field field-narrow" id="chartHourTo"></select>
+        </div>
+        <div style="align-self:flex-end">
+          <button type="button" class="btn btn-primary" id="btnLoadChart">Muat grafik</button>
+        </div>
+      </div>
+
+      <div id="chartArea">
+        <div class="chart-empty">Pilih node lalu klik Muat grafik.</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Detail node -->
+  <dialog id="detail">
+    <div class="modal-head">
+      <div class="row">
+        <div>
+          <div class="id" id="dId">-</div>
+          <div class="jenis" id="dJenis">-</div>
+        </div>
+        <span class="badge" id="dStatus">-</span>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div id="dNilai" class="nilai"></div>
+      <div class="meta" id="dMeta"></div>
+      <div class="action" id="dAction"></div>
+
+      <div class="calib-box">
+        <h3>Kalibrasi node</h3>
+        <div id="calibA" hidden>
+          <label class="field-label">Lux m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calLuxM" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calLuxC" inputmode="decimal" placeholder="c">
+          </div>
+          <label class="field-label">Baterai m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calBatM_A" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calBatC_A" inputmode="decimal" placeholder="c">
+          </div>
+        </div>
+        <div id="calibB" hidden>
+          <label class="field-label">Suhu m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calTempM" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calTempC" inputmode="decimal" placeholder="c">
+          </div>
+          <label class="field-label">RH m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calRhM" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calRhC" inputmode="decimal" placeholder="c">
+          </div>
+          <label class="field-label">CO2 m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calCo2M" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calCo2C" inputmode="decimal" placeholder="c">
+          </div>
+          <label class="field-label">Baterai m / c</label>
+          <div class="row2">
+            <input class="confirm-input" id="calBatM_B" inputmode="decimal" placeholder="m">
+            <input class="confirm-input" id="calBatC_B" inputmode="decimal" placeholder="c">
+          </div>
+        </div>
+        <p class="calib-hint">y = m*x + c. Disimpan untuk node ini saja. Node mengambilnya saat daya baru dinyalakan. Halaman AP di node hanya menampilkan nilai ini (tidak bisa diubah di sana).</p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnDetailChart">Lihat grafik</button>
+      <button type="button" class="btn btn-primary" id="btnSaveCalib">Simpan kalibrasi</button>
+      <button type="button" class="btn btn-ghost" onclick="document.getElementById('detail').close()">Tutup</button>
+    </div>
+  </dialog>
+
+  <!-- Konfirmasi kalibrasi 1 langkah -->
+  <dialog id="dlgCalibConfirm">
+    <div class="modal-head"><strong>Simpan kalibrasi?</strong></div>
+    <div class="modal-body">
+      <div class="warn-box yellow">
+        Nilai ini hanya untuk node <b id="calibConfirmId">-</b>.
+        Node lain tidak berubah. Node mengambilnya saat daya baru dinyalakan.
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnCalibCancel">Batal</button>
+      <button type="button" class="btn btn-primary" id="btnCalibGo">Simpan</button>
+    </div>
+  </dialog>
+
+  <!-- Hapus 1/2 -->
+  <dialog id="dlgDelete1">
+    <div class="modal-head"><strong>Peringatan 1/2 — Hapus semua data?</strong></div>
+    <div class="modal-body">
+      <div class="warn-box yellow">
+        Tindakan ini <b>tidak bisa dibatalkan</b>. Semua histori di sheet node
+        (A-01…B-03) akan dikosongkan. Status dashboard di-reset ke awal.
+      </div>
+      <p style="margin:0;font-size:13px;line-height:1.5;color:#c9d6ef">
+        File CSV di ESP32 <b>tidak</b> ikut terhapus dari sini.
+        Setelah hapus, pengisian data dimulai dari awal saat node mengirim lagi.
+      </p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnDel1Cancel">Batal</button>
+      <button type="button" class="btn btn-danger" id="btnDel1Next">Lanjut</button>
+    </div>
+  </dialog>
+
+  <!-- Hapus 2/2 -->
+  <dialog id="dlgDelete2">
+    <div class="modal-head"><strong>Peringatan 2/2 — Konfirmasi</strong></div>
+    <div class="modal-body">
+      <div class="warn-box red">
+        Ketik persis: <b>HAPUS SEMUA</b>
+      </div>
+      <label class="field-label" for="confirmDelete">Konfirmasi</label>
+      <input class="confirm-input" id="confirmDelete" autocomplete="off" placeholder="HAPUS SEMUA">
+      <label class="check-row">
+        <input type="checkbox" id="ackDelete">
+        <span>Saya paham semua data histori di Spreadsheet akan hilang dan tidak bisa dikembalikan.</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnDel2Back">Kembali</button>
+      <button type="button" class="btn btn-danger" id="btnDel2Go" disabled>Hapus sekarang</button>
+    </div>
+  </dialog>
+
+  <!-- Link API 1/2 -->
+  <dialog id="dlgUrl1">
+    <div class="modal-head"><strong>Peringatan 1/2 — Ganti link API?</strong></div>
+    <div class="modal-body">
+      <div class="warn-box yellow">
+        Link ini dipakai semua node. Mereka mengambilnya hanya saat
+        <b>daya baru dinyalakan</b>, bukan setiap bangun dari sleep.
+        Deployment lama harus tetap aktif sampai semua node sempat menyala.
+      </div>
+      <label class="field-label">Link tersimpan sekarang</label>
+      <p class="url-now" id="urlNow">Memuat...</p>
+      <label class="field-label" for="scriptUrlInput">Link API baru (berakhiran /exec)</label>
+      <input class="confirm-input" id="scriptUrlInput" autocomplete="off" placeholder="https://script.google.com/macros/s/.../exec">
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnUrl1Cancel">Batal</button>
+      <button type="button" class="btn btn-primary" id="btnUrl1Next">Lanjut</button>
+    </div>
+  </dialog>
+
+  <!-- Link API 2/2 -->
+  <dialog id="dlgUrl2">
+    <div class="modal-head"><strong>Peringatan 2/2 — Konfirmasi link</strong></div>
+    <div class="modal-body">
+      <div class="warn-box red">
+        Ketik persis: <b>GANTI LINK</b>
+      </div>
+      <label class="field-label" for="confirmUrl">Konfirmasi</label>
+      <input class="confirm-input" id="confirmUrl" autocomplete="off" placeholder="GANTI LINK">
+      <label class="check-row">
+        <input type="checkbox" id="ackUrl">
+        <span>Saya paham semua node akan memakai link ini pada penyalaan daya berikutnya.</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnUrl2Back">Kembali</button>
+      <button type="button" class="btn btn-primary" id="btnUrl2Go" disabled>Simpan link</button>
+    </div>
+  </dialog>
+
+  <!-- Versi 1/2 -->
+  <dialog id="dlgVer1">
+    <div class="modal-head"><strong>Peringatan 1/2 — Ganti versi target?</strong></div>
+    <div class="modal-body">
+      <div class="warn-box yellow">
+        Versi ini tidak mengubah link API.
+        Node membandingkannya hanya saat <b>daya baru dinyalakan</b>.
+        Jika angka berbeda dari firmware di alat, node mengunduh
+        MonitoringBangunan.bin lalu restart.
+      </div>
+      <label class="field-label">Versi target sekarang</label>
+      <p class="url-now" id="verNow">Memuat...</p>
+      <label class="field-label" for="firmwareVersionInput">Versi target baru (contoh 1.9.0)</label>
+      <input class="confirm-input" id="firmwareVersionInput" autocomplete="off" placeholder="1.9.0">
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnVer1Cancel">Batal</button>
+      <button type="button" class="btn btn-primary" id="btnVer1Next">Lanjut</button>
+    </div>
+  </dialog>
+
+  <!-- Versi 2/2 -->
+  <dialog id="dlgVer2">
+    <div class="modal-head"><strong>Peringatan 2/2 — Konfirmasi versi</strong></div>
+    <div class="modal-body">
+      <div class="warn-box red">
+        Ketik persis: <b>GANTI VERSI</b>
+      </div>
+      <label class="field-label" for="confirmVer">Konfirmasi</label>
+      <input class="confirm-input" id="confirmVer" autocomplete="off" placeholder="GANTI VERSI">
+      <label class="check-row">
+        <input type="checkbox" id="ackVer">
+        <span>Saya paham node akan mengunduh firmware jika versi ini berbeda dari yang terpasang.</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnVer2Back">Kembali</button>
+      <button type="button" class="btn btn-primary" id="btnVer2Go" disabled>Simpan versi</button>
+    </div>
+  </dialog>
+
+  <!-- Pengaturan 1/2 -->
+  <dialog id="dlgSet1">
+    <div class="modal-head"><strong>Peringatan 1/2 — Pengaturan dashboard</strong></div>
+    <div class="modal-body">
+      <div class="warn-box yellow">
+        Tag <b>Langsung berlaku</b> = dipakai HMI saat disimpan.
+        Tag <b>Setelah daya ulang</b> = dipakai node setelah daya dimatikan lalu dinyalakan
+        (bukan setiap bangun sleep).
+      </div>
+
+      <!-- Grup 1: status di HMI (langsung berlaku) -->
+      <section class="set-group">
+        <div class="set-group-head">
+          <div class="set-group-title"><span class="set-group-num">1</span>Status di HMI</div>
+          <span class="set-tag now">LANGSUNG BERLAKU</span>
+        </div>
+        <div class="set-field">
+          <label class="field-label" for="setMaxAge">Batas usia data (detik)</label>
+          <input class="confirm-input" id="setMaxAge" type="number" min="10" max="86400" step="1" placeholder="900">
+          <p class="hint">Interval 5 menit: biasanya 600–900. Di atas batas = TERLAMBAT; di atas 3× = OFFLINE.</p>
+        </div>
+        <div class="set-field">
+          <label class="field-label" for="setBatteryLow">Baterai low (V)</label>
+          <input class="confirm-input" id="setBatteryLow" type="number" min="2.5" max="5" step="0.01" placeholder="3.50">
+          <p class="hint">Di bawah nilai ini status menjadi BATERAI LOW. Default 3.50 V.</p>
+        </div>
+      </section>
+
+      <!-- Grup 2: jadwal pengiriman node (setelah daya ulang) -->
+      <section class="set-group">
+        <div class="set-group-head">
+          <div class="set-group-title"><span class="set-group-num">2</span>Jadwal pengiriman node</div>
+          <span class="set-tag cold">SETELAH DAYA ULANG</span>
+        </div>
+        <div class="set-field">
+          <label class="field-label" for="setIntervalS">Interval sampling / periodic (detik)</label>
+          <input class="confirm-input" id="setIntervalS" type="number" min="10" max="3600" step="1" placeholder="300">
+          <p class="hint">Default 300 (5 menit). Rentang 10–3600. Berlaku ke semua node.</p>
+        </div>
+        <div class="set-field">
+          <div class="set-pair">
+            <div>
+              <label class="field-label" for="setStaggerGroupSize">Alat per rombongan</label>
+              <input class="confirm-input" id="setStaggerGroupSize" type="number" min="1" max="25" step="1" placeholder="3">
+            </div>
+            <div>
+              <label class="field-label" for="setStaggerStepS">Jeda antar rombongan (detik)</label>
+              <input class="confirm-input" id="setStaggerStepS" type="number" min="1" max="120" step="1" placeholder="10">
+            </div>
+          </div>
+          <p class="hint" id="staggerPreview">Default 3 alat / 10 detik.</p>
+        </div>
+      </section>
+
+      <!-- Grup 3: waktu & sensor (setelah daya ulang) -->
+      <section class="set-group">
+        <div class="set-group-head">
+          <div class="set-group-title"><span class="set-group-num">3</span>Waktu &amp; sensor cahaya</div>
+          <span class="set-tag cold">SETELAH DAYA ULANG</span>
+        </div>
+        <div class="set-field">
+          <label class="field-label" for="setTimezone">Timezone lokasi alat</label>
+          <select class="confirm-input" id="setTimezone">
+            <option value="+07:00">WIB (+07:00) — Jakarta, Jawa, Sumatera</option>
+            <option value="+08:00">WITA (+08:00) — Bali, NTB, NTT, Kalimantan bagian</option>
+            <option value="+09:00">WIT (+09:00) — Papua, Maluku</option>
+          </select>
+          <p class="hint">Timestamp di Sheet = jam dinding zona ini (bukan GMT+0).</p>
+        </div>
+        <div class="set-field">
+          <label class="field-label" for="setGainMode">Mode gain VEML7700 (semua Node A)</label>
+          <select class="confirm-input" id="setGainMode">
+            <option value="auto">Autorange</option>
+            <option value="2">Gain 2x</option>
+            <option value="1">Gain 1x</option>
+            <option value="1_4">Gain 1/4x</option>
+            <option value="1_8">Gain 1/8x</option>
+          </select>
+          <p class="hint">
+            Satu nilai untuk semua Node A. Autorange menyesuaikan cahaya;
+            gain tetap dipakai bila kalibrasi dibuat pada gain tertentu.
+          </p>
+        </div>
+      </section>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnSet1Cancel">Batal</button>
+      <button type="button" class="btn btn-primary" id="btnSet1Next">Lanjut</button>
+    </div>
+  </dialog>
+
+  <!-- Pengaturan 2/2 -->
+  <dialog id="dlgSet2">
+    <div class="modal-head"><strong>Peringatan 2/2 — Konfirmasi pengaturan</strong></div>
+    <div class="modal-body">
+      <div class="warn-box red">
+        Ketik persis: <b>SIMPAN SETTING</b>
+      </div>
+      <label class="field-label" for="confirmSet">Konfirmasi</label>
+      <input class="confirm-input" id="confirmSet" autocomplete="off" placeholder="SIMPAN SETTING">
+      <label class="check-row">
+        <input type="checkbox" id="ackSet">
+        <span>Saya paham interval, timezone, rombongan, dan jeda baru dipakai node setelah daya dimatikan lalu dinyalakan lagi.</span>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" id="btnSet2Back">Kembali</button>
+      <button type="button" class="btn btn-primary" id="btnSet2Go" disabled>Simpan pengaturan</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- Data dashboard pertama dari doGet (template Apps Script). Saat file
+       dibuka lokal (demo), isinya tetap teks scriptlet dan diabaikan. -->
+  <script type="application/json" id="initialData"><?!= initialJson ?></script>
+
+  <script>
+    var g_nodes = [];
+    var g_filter = 'all';
+    var g_selectedDetailId = '';
+    var g_chartTimezone = '+07:00';
+    var CONFIRM_TEXT = 'HAPUS SEMUA';
+    var CONFIRM_URL = 'GANTI LINK';
+    var CONFIRM_VER = 'GANTI VERSI';
+    var CONFIRM_SET = 'SIMPAN SETTING';
+
+    function hasAppsScript() {
+      return typeof google !== 'undefined' && google.script && google.script.run;
+    }
+
+    function showToast(msg) {
+      var el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast show';
+      setTimeout(function () { el.className = 'toast'; }, 4200);
+    }
+
+    function clsOf(status) {
+      if (status === 'OK') return 'ok';
+      if (status === 'TERLAMBAT') return 'warn';
+      if (status === 'ERROR SENSOR' || status === 'BATERAI LOW') return 'err';
+      return 'off';
+    }
+
+    function fmtAge(age) {
+      if (age === '' || age === null || age === undefined) return '-';
+      var n = Number(age);
+      if (isNaN(n)) return '-';
+      if (n < 0) n = 0; // jaga-jaga data lama yang masih negatif
+      if (n < 60) return n + ' dtk lalu';
+      if (n < 3600) return Math.floor(n / 60) + ' mnt lalu';
+      return Math.floor(n / 3600) + ' jam lalu';
+    }
+
+    function shortLabel(iso) {
+      if (!iso) return '';
+      var s = String(iso).trim();
+      // 2026-09-27T23:05:00 atau 2026-09-27 23:05:00 -> 27/09 23:05
+      var m = s.match(/(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+      if (m) {
+        return m[3] + '/' + m[2] + ' ' + m[4] + ':' + m[5];
+      }
+      var d = new Date(s);
+      if (!isNaN(d.getTime())) {
+        return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + ' ' +
+          pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+      }
+      return s.slice(0, 16);
+    }
+
+    function setView(name) {
+      document.getElementById('viewOverview').classList.toggle('active', name === 'overview');
+      document.getElementById('viewCharts').classList.toggle('active', name === 'charts');
+      document.getElementById('tabOverview').classList.toggle('active', name === 'overview');
+      document.getElementById('tabCharts').classList.toggle('active', name === 'charts');
+    }
+
+    function fillNodeSelect() {
+      var sel = document.getElementById('chartNode');
+      var cur = sel.value;
+      sel.innerHTML = '';
+      g_nodes.forEach(function (n) {
+        var opt = document.createElement('option');
+        opt.value = n.id;
+        opt.textContent = n.id + ' — ' + n.jenis;
+        sel.appendChild(opt);
+      });
+      if (cur) { sel.value = cur; }
+      if (!sel.value && g_nodes.length) { sel.value = g_nodes[0].id; }
+    }
+
+    function escapeHtml(text) {
+      return String(text === null || text === undefined ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    /**
+     * Pecah teks nilai Sheet menjadi chip.
+     * "T 24.1 C | RH 58 % | CO2 720 ppm" -> [T 24.1 C] [RH 58 %] [CO2 720 ppm]
+     * Bagian "valid 1" disembunyikan karena hanya penanda internal.
+     */
+    function nilaiChipsHtml(nilai) {
+      if (!nilai) {
+        return '<span class="chip empty">Belum ada pengukuran</span>';
+      }
+      var parts = String(nilai).split('|');
+      var html = '';
+      for (var i = 0; i < parts.length; i++) {
+        var part = parts[i].trim();
+        if (!part || /^valid\s/i.test(part)) continue;
+        // "Lux 312" -> label "Lux", angka "312", satuan setelahnya.
+        var m = part.match(/^([A-Za-z0-9₂]+)\s+(-?[\d.]+|-)\s*(.*)$/);
+        if (m) {
+          html += '<span class="chip">' + escapeHtml(m[1]) + ' <b>' + escapeHtml(m[2]) + '</b>' +
+            (m[3] ? escapeHtml(m[3]) : '') + '</span>';
+        } else {
+          html += '<span class="chip">' + escapeHtml(part) + '</span>';
+        }
+      }
+      return html || '<span class="chip empty">' + escapeHtml(nilai) + '</span>';
+    }
+
+    /**
+     * Teks baterai di kartu, contoh "Baterai 3.92 V".
+     * Hanya nilai tegangan; status BATERAI LOW tetap dari server (badge).
+     */
+    function batteryHtml(battery) {
+      if (battery === '' || battery === null || battery === undefined || isNaN(Number(battery))) {
+        return '<span class="chip empty batt">Baterai -</span>';
+      }
+      var v = Number(battery);
+      return '<span class="chip batt">Baterai <b>' + v.toFixed(2) + '</b>V</span>';
+    }
+
+    function render() {
+      var grid = document.getElementById('grid');
+      // Susun semua kartu dulu di fragment, lalu pasang sekali (satu reflow).
+      var frag = document.createDocumentFragment();
+      var shown = 0;
+
+      g_nodes.forEach(function (node) {
+        var show = true;
+        if (g_filter === 'A') show = node.id.indexOf('A') === 0;
+        if (g_filter === 'B') show = node.id.indexOf('B') === 0;
+        if (g_filter === 'problem') show = node.status !== 'OK';
+        if (!show) return;
+        shown++;
+
+        var isNodeA = String(node.id).charAt(0).toUpperCase() === 'A';
+        var card = document.createElement('article');
+        card.className = 'card ' + clsOf(node.status) + (isNodeA ? ' type-a' : ' type-b');
+        card.tabIndex = 0;
+        card.onclick = function () { openDetail(node); };
+        card.onkeydown = function (ev) {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openDetail(node);
+          }
+        };
+        card.innerHTML =
+          '<div class="row">' +
+            '<div class="node-head">' +
+              '<span class="node-ico id">' + escapeHtml(node.id) + '</span>' +
+              '<div class="jenis">' + escapeHtml(node.jenis) + '</div>' +
+            '</div>' +
+            '<span class="badge"><i></i>' + escapeHtml(node.status) + '</span>' +
+          '</div>' +
+          '<div class="chips">' + nilaiChipsHtml(node.nilai) + '</div>' +
+          '<div class="card-foot">' + batteryHtml(node.battery) +
+            '<span>' + fmtAge(node.age) + '</span>' +
+          '</div>';
+        frag.appendChild(card);
+      });
+
+      grid.innerHTML = '';
+      grid.appendChild(frag);
+
+      var countEl = document.getElementById('filterCount');
+      if (countEl) {
+        countEl.textContent = shown + ' dari ' + g_nodes.length + ' node';
+      }
+    }
+
+    /**
+     * Bar kecil di bawah KPI = porsi status dari total node.
+     */
+    function updateKpiBars(summary) {
+      var total = Number(summary && summary.total) || 0;
+      function setBar(id, count) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var pct = total > 0 ? (Number(count) || 0) / total * 100 : 0;
+        el.style.width = pct.toFixed(1) + '%';
+      }
+      setBar('kbTotal', total);
+      setBar('kbOk', summary.ok);
+      setBar('kbWarn', summary.warn);
+      setBar('kbErr', summary.error);
+      setBar('kbOff', summary.offline);
+    }
+
+    function fmtFirmware(v) {
+      if (v === null || v === undefined || v === '') return '-';
+      var s = String(v);
+      if (s.indexOf('GMT') >= 0 || s.indexOf('Waktu Indonesia') >= 0) {
+        return 'Version-unknown';
+      }
+      if (s.indexOf('Version-') === 0) return s;
+      return 'Version-' + s;
+    }
+
+    function setCalibInput(id, value) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.value = (value === undefined || value === null || value === '') ? '' : String(value);
+    }
+
+    function readCalibNumber(id) {
+      var el = document.getElementById(id);
+      if (!el) return NaN;
+      return Number(String(el.value).trim().replace(',', '.'));
+    }
+
+    function fillCalibrationForm(nodeId, calib) {
+      var isA = String(nodeId || '').charAt(0).toUpperCase() === 'A';
+      document.getElementById('calibA').hidden = !isA;
+      document.getElementById('calibB').hidden = isA;
+      calib = calib || {};
+
+      if (isA) {
+        setCalibInput('calLuxM', calib.lux_m);
+        setCalibInput('calLuxC', calib.lux_c);
+        setCalibInput('calBatM_A', calib.bat_m);
+        setCalibInput('calBatC_A', calib.bat_c);
+      } else {
+        setCalibInput('calTempM', calib.temp_m);
+        setCalibInput('calTempC', calib.temp_c);
+        setCalibInput('calRhM', calib.rh_m);
+        setCalibInput('calRhC', calib.rh_c);
+        setCalibInput('calCo2M', calib.co2_m);
+        setCalibInput('calCo2C', calib.co2_c);
+        setCalibInput('calBatM_B', calib.bat_m);
+        setCalibInput('calBatC_B', calib.bat_c);
+      }
+    }
+
+    function collectCalibrationFromForm(nodeId) {
+      var isA = String(nodeId || '').charAt(0).toUpperCase() === 'A';
+      if (isA) {
+        return {
+          lux_m: readCalibNumber('calLuxM'),
+          lux_c: readCalibNumber('calLuxC'),
+          bat_m: readCalibNumber('calBatM_A'),
+          bat_c: readCalibNumber('calBatC_A')
+        };
+      }
+      return {
+        temp_m: readCalibNumber('calTempM'),
+        temp_c: readCalibNumber('calTempC'),
+        rh_m: readCalibNumber('calRhM'),
+        rh_c: readCalibNumber('calRhC'),
+        co2_m: readCalibNumber('calCo2M'),
+        co2_c: readCalibNumber('calCo2C'),
+        bat_m: readCalibNumber('calBatM_B'),
+        bat_c: readCalibNumber('calBatC_B')
+      };
+    }
+
+    function openDetail(node) {
+      g_selectedDetailId = node.id;
+      document.getElementById('dId').textContent = node.id;
+      document.getElementById('dJenis').textContent = node.jenis;
+      var badge = document.getElementById('dStatus');
+      badge.innerHTML = '<i></i>' + escapeHtml(node.status);
+      badge.className = 'badge ' + clsOf(node.status);
+      document.getElementById('dNilai').innerHTML =
+        '<div class="chips">' + nilaiChipsHtml(node.nilai) + '</div>';
+      document.getElementById('dMeta').textContent =
+        'Waktu ' + (node.lastUtc || '-') +
+        ' · ' + fmtFirmware(node.firmware) +
+        ' · Sensor ' + (node.sensorStatus === '' || node.sensorStatus === null || node.sensorStatus === undefined ? '-' : node.sensorStatus);
+      document.getElementById('dAction').textContent = node.action || '-';
+
+      fillCalibrationForm(node.id, null);
+      document.getElementById('detail').showModal();
+
+      if (!hasAppsScript()) {
+        fillCalibrationForm(node.id, {
+          lux_m: 1, lux_c: 0,
+          temp_m: 1, temp_c: 0,
+          rh_m: 1, rh_c: 0,
+          co2_m: 1, co2_c: 0,
+          bat_m: 0.667031, bat_c: 0.164867
+        });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(function (res) {
+          if (!res || !res.ok) {
+            showToast((res && res.message) || 'Gagal memuat kalibrasi.');
+            return;
+          }
+          fillCalibrationForm(node.id, res.calibration);
+        })
+        .withFailureHandler(function (err) {
+          showToast('Gagal memuat kalibrasi: ' + err.message);
+        })
+        .getNodeCalibration(node.id);
+    }
+
+    function openCalibConfirm() {
+      if (!g_selectedDetailId) {
+        showToast('Node belum dipilih.');
+        return;
+      }
+      var calib = collectCalibrationFromForm(g_selectedDetailId);
+      var keys = Object.keys(calib);
+      for (var i = 0; i < keys.length; i++) {
+        if (!isFinite(calib[keys[i]])) {
+          showToast('Semua kolom kalibrasi harus angka.');
+          return;
+        }
+      }
+      document.getElementById('calibConfirmId').textContent = g_selectedDetailId;
+      document.getElementById('dlgCalibConfirm').showModal();
+    }
+
+    function runSaveCalibration() {
+      var nodeId = g_selectedDetailId;
+      var calib = collectCalibrationFromForm(nodeId);
+      document.getElementById('btnCalibGo').disabled = true;
+
+      function onResult(res) {
+        document.getElementById('btnCalibGo').disabled = false;
+        document.getElementById('dlgCalibConfirm').close();
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Simpan kalibrasi gagal.');
+          return;
+        }
+        fillCalibrationForm(nodeId, res.calibration);
+        showToast(res.message);
+      }
+
+      if (!hasAppsScript()) {
+        onResult({
+          ok: true,
+          message: 'Simulasi lokal: kalibrasi ' + nodeId + ' tidak tersimpan ke Sheet.',
+          calibration: calib
+        });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(onResult)
+        .withFailureHandler(function (err) {
+          document.getElementById('btnCalibGo').disabled = false;
+          showToast('Gagal simpan kalibrasi: ' + err.message);
+        })
+        .setNodeCalibration(nodeId, calib);
+    }
+
+    function applyData(data) {
+      g_nodes = data.nodes || [];
+      if (data.timezone) {
+        g_chartTimezone = String(data.timezone);
+      }
+      document.getElementById('kTotal').textContent = data.summary.total;
+      document.getElementById('kOk').textContent = data.summary.ok;
+      document.getElementById('kWarn').textContent = data.summary.warn;
+      document.getElementById('kErr').textContent = data.summary.error;
+      document.getElementById('kOff').textContent = data.summary.offline;
+      updateKpiBars(data.summary);
+      document.getElementById('updated').textContent =
+        'Live · ' + Math.round(POLL_MS / 1000) + ' dtk · ' + new Date().toLocaleTimeString('id-ID');
+      render();
+      fillNodeSelect();
+    }
+
+    // Satu permintaan getDashboardData saja pada satu waktu. Jika server
+    // lambat, poll berikutnya tidak menumpuk; load() yang datang saat masih
+    // sibuk dicatat dan dijalankan sekali setelah permintaan selesai.
+    var g_loadBusy = false;
+    var g_loadAgain = false;
+
+    function finishLoad() {
+      g_loadBusy = false;
+      if (g_loadAgain) {
+        g_loadAgain = false;
+        load();
+      }
+    }
+
+    function load() {
+      if (!hasAppsScript()) {
+        applyData(demoDashboard());
+        return;
+      }
+      if (g_loadBusy) {
+        g_loadAgain = true;
+        return;
+      }
+      g_loadBusy = true;
+      google.script.run
+        .withSuccessHandler(function (data) {
+          applyData(data);
+          finishLoad();
+        })
+        .withFailureHandler(function (err) {
+          showToast('Gagal muat dashboard: ' + err.message);
+          finishLoad();
+        })
+        .getDashboardData();
+    }
+
+    /**
+     * Data pertama yang disisipkan doGet. Mengembalikan null jika kosong,
+     * belum diganti template (mode demo lokal), atau JSON rusak.
+     */
+    function readInitialData() {
+      var el = document.getElementById('initialData');
+      var text = el ? String(el.textContent || '').trim() : '';
+      if (!text || text.charAt(0) !== '{') {
+        return null;
+      }
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    /**
+     * Label tip grafik: tanggal + jam agar mudah dibaca di pointer.
+     * Contoh: 22/09 10:35
+     */
+    function chartTipTime(iso) {
+      if (!iso) return '-';
+      var s = String(iso);
+      var m = s.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/);
+      if (m) {
+        return m[3] + '/' + m[2] + ' ' + m[4];
+      }
+      return shortLabel(iso) || '-';
+    }
+
+    function formatChartValue(v) {
+      if (v === null || v === undefined || isNaN(Number(v))) return '-';
+      var n = Number(v);
+      if (Math.abs(n) >= 100) return String(Math.round(n));
+      if (Math.abs(n) >= 10) return n.toFixed(1);
+      return n.toFixed(2);
+    }
+
+    /* ========== SVG CHART ========== */
+    // Id unik gradient SVG per grafik (beberapa grafik tampil bersamaan).
+    var g_chartSeq = 0;
+
+    function drawLineChart(container, title, subtitle, labels, values, color) {
+      var panel = document.createElement('div');
+      panel.className = 'chart-panel';
+      panel.innerHTML =
+        '<h3><span class="swatch" style="background:' + color + '"></span>' + title + '</h3>' +
+        '<div class="sub">' + subtitle + '</div>';
+
+      if (!values || !values.length) {
+        panel.innerHTML += '<div class="chart-empty">Belum ada data histori.</div>';
+        container.appendChild(panel);
+        return;
+      }
+
+      var wrap = document.createElement('div');
+      wrap.className = 'chart-wrap';
+
+      var w = 800;
+      var h = 220;
+      var padL = 48;
+      var padR = 16;
+      var padT = 16;
+      var padB = 44;
+      var nums = values.map(function (v) { return Number(v); }).filter(function (v) { return !isNaN(v); });
+      if (!nums.length) {
+        panel.innerHTML += '<div class="chart-empty">Nilai tidak valid.</div>';
+        container.appendChild(panel);
+        return;
+      }
+
+      var minV = Math.min.apply(null, nums);
+      var maxV = Math.max.apply(null, nums);
+      if (minV === maxV) {
+        minV -= 1;
+        maxV += 1;
+      }
+      var span = maxV - minV;
+
+      var pts = [];
+      for (var i = 0; i < values.length; i++) {
+        var val = values[i];
+        if (val === null || val === undefined || val === '') continue;
+        val = Number(val);
+        if (isNaN(val)) continue;
+        var x = padL + (i / Math.max(1, values.length - 1)) * (w - padL - padR);
+        var y = padT + (1 - (val - minV) / span) * (h - padT - padB);
+        pts.push({
+          x: x,
+          y: y,
+          v: val,
+          l: shortLabel(labels[i]),
+          tip: chartTipTime(labels[i])
+        });
+      }
+
+      var path = pts.map(function (p, idx) {
+        return (idx === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+      }).join(' ');
+
+      // Area berwarna di bawah garis: path garis ditutup ke dasar grafik.
+      var baseY = (h - padB).toFixed(1);
+      var areaPath = '';
+      if (pts.length > 1) {
+        areaPath = path +
+          ' L' + pts[pts.length - 1].x.toFixed(1) + ' ' + baseY +
+          ' L' + pts[0].x.toFixed(1) + ' ' + baseY + ' Z';
+      }
+      g_chartSeq++;
+      var gradId = 'chartGrad' + g_chartSeq;
+
+      // Ringkasan angka: nilai terakhir, minimum, maksimum, rata-rata.
+      var sum = 0;
+      for (var s = 0; s < nums.length; s++) { sum += nums[s]; }
+      var lastPt = pts[pts.length - 1];
+      var stats = document.createElement('div');
+      stats.className = 'chart-stats';
+      stats.innerHTML =
+        '<span>Terakhir<b style="color:' + color + '">' + formatChartValue(lastPt ? lastPt.v : null) + '</b></span>' +
+        '<span>Min<b>' + formatChartValue(Math.min.apply(null, nums)) + '</b></span>' +
+        '<span>Maks<b>' + formatChartValue(Math.max.apply(null, nums)) + '</b></span>' +
+        '<span>Rata-rata<b>' + formatChartValue(sum / nums.length) + '</b></span>';
+      panel.appendChild(stats);
+
+      var yTicks = '';
+      for (var t = 0; t < 4; t++) {
+        var tv = maxV - (span * t / 3);
+        var ty = padT + (t / 3) * (h - padT - padB);
+        yTicks +=
+          '<line x1="' + padL + '" y1="' + ty + '" x2="' + (w - padR) + '" y2="' + ty + '" stroke="#243049" stroke-width="1"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (ty + 4) + '" fill="#8b9bb8" font-size="11" text-anchor="end">' +
+          (Math.abs(tv) >= 100 ? tv.toFixed(0) : tv.toFixed(1)) + '</text>';
+      }
+
+      var xLabels = '';
+      if (pts.length) {
+        var idxs = [0, Math.floor(pts.length / 2), pts.length - 1];
+        // Label kiri rata kiri, tengah di tengah, kanan rata kanan, supaya
+        // teks di ujung grafik tidak terpotong tepi SVG.
+        var anchors = ['start', 'middle', 'end'];
+        idxs.forEach(function (ix, k) {
+          var p = pts[ix];
+          if (!p) return;
+          xLabels +=
+            '<text x="' + p.x + '" y="' + (h - 10) + '" fill="#8b9bb8" font-size="11" text-anchor="' + anchors[k] + '">' +
+            (p.l || '') + '</text>';
+        });
+      }
+
+      wrap.innerHTML =
+        '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+        '<defs><linearGradient id="' + gradId + '" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.28"/>' +
+          '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/>' +
+        '</linearGradient></defs>' +
+        yTicks +
+        (areaPath ? '<path d="' + areaPath + '" fill="url(#' + gradId + ')" stroke="none"/>' : '') +
+        '<path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>' +
+        xLabels +
+        '<g class="chart-guide" style="display:none">' +
+          '<line class="chart-vline" x1="0" y1="' + padT + '" x2="0" y2="' + (h - padB) + '" stroke="' + color + '" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>' +
+          '<circle class="chart-dot" cx="0" cy="0" r="5" fill="' + color + '" stroke="#0b1220" stroke-width="2"/>' +
+        '</g>' +
+        '</svg>' +
+        '<div class="chart-tip"></div>';
+
+      var svg = wrap.querySelector('svg');
+      var guide = wrap.querySelector('.chart-guide');
+      var vline = wrap.querySelector('.chart-vline');
+      var dot = wrap.querySelector('.chart-dot');
+      var tip = wrap.querySelector('.chart-tip');
+
+      function hidePointer() {
+        if (guide) guide.style.display = 'none';
+        if (tip) tip.style.display = 'none';
+      }
+
+      function showPointerAt(idx) {
+        var p = pts[idx];
+        if (!p || !guide || !vline || !dot || !tip) return;
+        guide.style.display = '';
+        vline.setAttribute('x1', p.x.toFixed(1));
+        vline.setAttribute('x2', p.x.toFixed(1));
+        dot.setAttribute('cx', p.x.toFixed(1));
+        dot.setAttribute('cy', p.y.toFixed(1));
+        tip.innerHTML =
+          '<strong>' + formatChartValue(p.v) + '</strong>' +
+          '<span>' + (p.tip || '-') + '</span>';
+        tip.style.display = 'block';
+
+        // Posisi tip di layar: petakan x viewBox ke % lebar wrap.
+        var pctX = (p.x / w) * 100;
+        var pctY = (p.y / h) * 100;
+        tip.style.left = pctX + '%';
+        tip.style.top = pctY + '%';
+        // Jaga tip tidak keluar tepi kiri/kanan.
+        if (pctX < 12) {
+          tip.style.transform = 'translate(0, calc(-100% - 10px))';
+        } else if (pctX > 88) {
+          tip.style.transform = 'translate(-100%, calc(-100% - 10px))';
+        } else {
+          tip.style.transform = 'translate(-50%, calc(-100% - 10px))';
+        }
+      }
+
+      function nearestIndex(svgX) {
+        var best = 0;
+        var bestDist = Infinity;
+        for (var i = 0; i < pts.length; i++) {
+          var d = Math.abs(pts[i].x - svgX);
+          if (d < bestDist) {
+            bestDist = d;
+            best = i;
+          }
+        }
+        return best;
+      }
+
+      function onMove(ev) {
+        if (!pts.length || !svg) return;
+        var rect = svg.getBoundingClientRect();
+        if (!rect.width) return;
+        var svgX = ((ev.clientX - rect.left) / rect.width) * w;
+        showPointerAt(nearestIndex(svgX));
+      }
+
+      wrap.addEventListener('mousemove', onMove);
+      wrap.addEventListener('mouseleave', hidePointer);
+      // Sentuh: tap untuk lihat nilai.
+      wrap.addEventListener('touchstart', function (ev) {
+        if (!ev.touches || !ev.touches.length) return;
+        var tch = ev.touches[0];
+        onMove({ clientX: tch.clientX, clientY: tch.clientY });
+      }, { passive: true });
+
+      panel.appendChild(wrap);
+      container.appendChild(panel);
+    }
+
+    function renderCharts(data) {
+      var area = document.getElementById('chartArea');
+      area.innerHTML = '';
+
+      if (!data || !data.labels || !data.labels.length) {
+        area.innerHTML = '<div class="chart-empty">Belum ada histori untuk node ini.</div>';
+        return;
+      }
+
+      var isA = data.jenis === 'Iluminansi' || (data.nodeId && data.nodeId.charAt(0) === 'A');
+      var head = document.createElement('div');
+      head.className = 'chart-panel';
+      var sub =
+        data.labels.length + ' titik ditampilkan';
+      if (data.from || data.to) {
+        sub += ' · ' + (data.from || '?') + ' → ' + (data.to || '?');
+      }
+      if (data.downsampled && data.totalMatched) {
+        // V2.5.0: titik diambil merata di seluruh rentang (bukan dipotong).
+        sub += ' · diringkas merata dari ' + data.totalMatched + ' titik menjadi ' +
+          data.labels.length + ' titik';
+      } else if (data.truncated && data.totalMatched) {
+        sub += ' · dipotong dari ' + data.totalMatched + ' cocok (batas 500)';
+      }
+      head.innerHTML =
+        '<h3>' + data.nodeId + ' · ' + data.jenis + '</h3>' +
+        '<div class="sub">' + sub + '</div>';
+      area.appendChild(head);
+
+      // Grafik disusun 2 kolom di layar lebar, 1 kolom di HP.
+      var chartGrid = document.createElement('div');
+      chartGrid.className = 'chart-grid';
+      area.appendChild(chartGrid);
+
+      if (isA) {
+        drawLineChart(chartGrid, 'Iluminansi (lux)', 'Tren cahaya', data.labels, data.series.illuminance, '#38bdf8');
+        drawLineChart(chartGrid, 'Baterai (V)', 'Tegangan backup', data.labels, data.series.battery, '#34d399');
+      } else {
+        drawLineChart(chartGrid, 'Suhu udara (°C)', 'Air temperature', data.labels, data.series.temperature, '#fbbf24');
+        drawLineChart(chartGrid, 'Kelembapan relatif (%)', 'Relative humidity', data.labels, data.series.humidity, '#38bdf8');
+        drawLineChart(chartGrid, 'CO₂ (ppm)', 'Karbon dioksida', data.labels, data.series.co2, '#a78bfa');
+        drawLineChart(chartGrid, 'Baterai (V)', 'Tegangan backup', data.labels, data.series.battery, '#34d399');
+      }
+    }
+
+    function pad2(n) {
+      return (n < 10 ? '0' : '') + n;
+    }
+
+    function dateInputValue(d) {
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+
+    function fillHourSelect(sel, selected) {
+      sel.innerHTML = '';
+      for (var h = 0; h <= 23; h++) {
+        var opt = document.createElement('option');
+        opt.value = String(h);
+        opt.textContent = pad2(h) + ':00';
+        if (h === selected) {
+          opt.selected = true;
+        }
+        sel.appendChild(opt);
+      }
+    }
+
+    function initChartRangeDefaults() {
+      var to = new Date();
+      var from = new Date(to.getTime() - 24 * 60 * 60 * 1000);
+      document.getElementById('chartDateFrom').value = dateInputValue(from);
+      document.getElementById('chartDateTo').value = dateInputValue(to);
+      fillHourSelect(document.getElementById('chartHourFrom'), 0);
+      fillHourSelect(document.getElementById('chartHourTo'), 23);
+    }
+
+    function getChartTimezoneSuffix() {
+      // Samakan dengan timezone Sheet bila sudah dimuat dari pengaturan;
+      // default WIB agar parse rentang konsisten dengan data lokal node.
+      if (typeof g_chartTimezone === 'string' &&
+          (g_chartTimezone === '+07:00' ||
+           g_chartTimezone === '+08:00' ||
+           g_chartTimezone === '+09:00')) {
+        return g_chartTimezone;
+      }
+      return '+07:00';
+    }
+
+    function buildChartRange() {
+      var dateFrom = document.getElementById('chartDateFrom').value;
+      var dateTo = document.getElementById('chartDateTo').value;
+      var hourFrom = Number(document.getElementById('chartHourFrom').value);
+      var hourTo = Number(document.getElementById('chartHourTo').value);
+      if (!dateFrom || !dateTo) {
+        return null;
+      }
+      if (isNaN(hourFrom) || hourFrom < 0 || hourFrom > 23) {
+        hourFrom = 0;
+      }
+      if (isNaN(hourTo) || hourTo < 0 || hourTo > 23) {
+        hourTo = 23;
+      }
+      var tz = getChartTimezoneSuffix();
+      return {
+        from: dateFrom + 'T' + pad2(hourFrom) + ':00:00' + tz,
+        to: dateTo + 'T' + pad2(hourTo) + ':59:59' + tz
+      };
+    }
+
+    function loadChart() {
+      var nodeId = document.getElementById('chartNode').value;
+      if (!nodeId) {
+        showToast('Pilih node terlebih dahulu.');
+        return;
+      }
+
+      var range = buildChartRange();
+      if (!range) {
+        showToast('Isi tanggal dari dan tanggal sampai.');
+        return;
+      }
+      if (new Date(range.to).getTime() < new Date(range.from).getTime()) {
+        showToast('Tanggal/jam sampai harus setelah tanggal/jam dari.');
+        return;
+      }
+
+      document.getElementById('chartArea').innerHTML =
+        '<div class="chart-empty">Memuat grafik ' + nodeId + '...</div>';
+
+      if (!hasAppsScript()) {
+        renderCharts(demoChart(nodeId, range));
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(renderCharts)
+        .withFailureHandler(function (err) {
+          document.getElementById('chartArea').innerHTML =
+            '<div class="chart-empty">Gagal muat grafik: ' + err.message + '</div>';
+        })
+        .getNodeChartData(nodeId, range);
+    }
+
+    function updateDeleteReady() {
+      var ok =
+        document.getElementById('ackDelete').checked &&
+        document.getElementById('confirmDelete').value.trim().toUpperCase() === CONFIRM_TEXT;
+      document.getElementById('btnDel2Go').disabled = !ok;
+    }
+
+    function runDelete() {
+      var text = document.getElementById('confirmDelete').value.trim();
+      document.getElementById('btnDel2Go').disabled = true;
+
+      function onResult(res) {
+        document.getElementById('dlgDelete2').close();
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Hapus gagal.');
+          return;
+        }
+        showToast(res.message);
+        load();
+        document.getElementById('chartArea').innerHTML =
+          '<div class="chart-empty">Data dikosongkan. Muat grafik lagi setelah node mengirim.</div>';
+      }
+
+      if (!hasAppsScript()) {
+        onResult({
+          ok: true,
+          message: 'Simulasi lokal: data demo di-reset.',
+          clearedSheets: 28
+        });
+        applyData(demoDashboardEmpty());
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(onResult)
+        .withFailureHandler(function (err) {
+          showToast('Gagal hapus: ' + err.message);
+          updateDeleteReady();
+        })
+        .deleteAllNodeData(text);
+    }
+
+    function updateUrlReady() {
+      var ok =
+        document.getElementById('ackUrl').checked &&
+        document.getElementById('confirmUrl').value.trim().toUpperCase() === CONFIRM_URL;
+      document.getElementById('btnUrl2Go').disabled = !ok;
+    }
+
+    function openUrlDialog() {
+      document.getElementById('urlNow').textContent = 'Memuat...';
+      document.getElementById('scriptUrlInput').value = '';
+
+      function show(res) {
+        var url = (res && res.script_url) ? res.script_url : '(belum ada)';
+        document.getElementById('urlNow').textContent = url;
+        document.getElementById('dlgUrl1').showModal();
+      }
+
+      if (!hasAppsScript()) {
+        show({ script_url: 'https://script.google.com/macros/s/CONTOH/exec' });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(show)
+        .withFailureHandler(function (err) {
+          document.getElementById('urlNow').textContent = 'Gagal memuat: ' + err.message;
+          document.getElementById('dlgUrl1').showModal();
+        })
+        .getScriptApiUrl();
+    }
+
+    function runSaveUrl() {
+      var url = document.getElementById('scriptUrlInput').value.trim();
+      var text = document.getElementById('confirmUrl').value.trim();
+      document.getElementById('btnUrl2Go').disabled = true;
+
+      function onResult(res) {
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Simpan link gagal.');
+          updateUrlReady();
+          return;
+        }
+        document.getElementById('dlgUrl2').close();
+        document.getElementById('urlNow').textContent = res.script_url || url;
+        showToast(res.message);
+      }
+
+      if (!hasAppsScript()) {
+        onResult({
+          ok: true,
+          message: 'Simulasi lokal: link tidak tersimpan ke Sheet.',
+          script_url: url
+        });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(onResult)
+        .withFailureHandler(function (err) {
+          showToast('Gagal simpan link: ' + err.message);
+          updateUrlReady();
+        })
+        .setScriptApiUrl(url, text);
+    }
+
+    function updateVerReady() {
+      var ok =
+        document.getElementById('ackVer').checked &&
+        document.getElementById('confirmVer').value.trim().toUpperCase() === CONFIRM_VER;
+      document.getElementById('btnVer2Go').disabled = !ok;
+    }
+
+    function openVersionDialog() {
+      document.getElementById('verNow').textContent = 'Memuat...';
+      document.getElementById('firmwareVersionInput').value = '';
+
+      function show(res) {
+        var ver = (res && res.firmware_version) ? res.firmware_version : '1.9.0';
+        document.getElementById('verNow').textContent = ver;
+        document.getElementById('firmwareVersionInput').value = ver;
+        document.getElementById('dlgVer1').showModal();
+      }
+
+      if (!hasAppsScript()) {
+        show({ firmware_version: '1.9.0' });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(show)
+        .withFailureHandler(function (err) {
+          document.getElementById('verNow').textContent = 'Gagal memuat: ' + err.message;
+          document.getElementById('dlgVer1').showModal();
+        })
+        .getScriptApiUrl();
+    }
+
+    function runSaveVersion() {
+      var version = document.getElementById('firmwareVersionInput').value.trim();
+      var text = document.getElementById('confirmVer').value.trim();
+      document.getElementById('btnVer2Go').disabled = true;
+
+      function onResult(res) {
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Simpan versi gagal.');
+          updateVerReady();
+          return;
+        }
+        document.getElementById('dlgVer2').close();
+        document.getElementById('verNow').textContent = res.firmware_version || version;
+        showToast(res.message);
+      }
+
+      if (!hasAppsScript()) {
+        onResult({
+          ok: true,
+          message: 'Simulasi lokal: versi tidak tersimpan ke Sheet.',
+          firmware_version: version
+        });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(onResult)
+        .withFailureHandler(function (err) {
+          showToast('Gagal simpan versi: ' + err.message);
+          updateVerReady();
+        })
+        .setFirmwareVersion(version, text);
+    }
+
+    function updateSetReady() {
+      var ok =
+        document.getElementById('ackSet').checked &&
+        document.getElementById('confirmSet').value.trim().toUpperCase() === CONFIRM_SET;
+      document.getElementById('btnSet2Go').disabled = !ok;
+    }
+
+    // Contoh jadwal kirim di bawah input rombongan/jeda (25 node per tipe).
+    function updateStaggerPreview() {
+      var el = document.getElementById('staggerPreview');
+      if (!el) {
+        return;
+      }
+      var size = Number(document.getElementById('setStaggerGroupSize').value);
+      var step = Number(document.getElementById('setStaggerStepS').value);
+      var interval = Number(document.getElementById('setIntervalS').value);
+      if (!size || size < 1 || !step || step < 1) {
+        el.textContent = 'Default 3 alat / 10 detik.';
+        return;
+      }
+      var groups = Math.ceil(25 / size);
+      var last = (groups - 1) * step;
+      var text = 'Node 1–' + Math.min(size, 25) + ' kirim +0 s';
+      if (groups > 1) {
+        text += ', node ' + (size + 1) + '–' + Math.min(size * 2, 25) + ' +' + step + ' s';
+      }
+      text += ', node ke-25 +' + last + ' s (' + groups + ' rombongan).';
+      if (interval && last >= interval) {
+        text += ' PERINGATAN: melebihi interval ' + interval + ' s.';
+      }
+      el.textContent = text;
+    }
+
+    function openSettingsDialog() {
+      function show(res) {
+        document.getElementById('setMaxAge').value =
+          (res && res.maxAge != null) ? res.maxAge : 900;
+        document.getElementById('setBatteryLow').value =
+          (res && res.batteryLow != null) ? res.batteryLow : 3.5;
+        document.getElementById('setIntervalS').value =
+          (res && res.intervalS != null) ? res.intervalS : 300;
+        if (res && res.intervalMin) {
+          document.getElementById('setIntervalS').min = res.intervalMin;
+        }
+        if (res && res.intervalMax) {
+          document.getElementById('setIntervalS').max = res.intervalMax;
+        }
+        var tz = (res && res.timezone) ? String(res.timezone) : '+07:00';
+        var selTz = document.getElementById('setTimezone');
+        if (selTz) {
+          selTz.value = tz;
+          if (selTz.value !== tz) {
+            selTz.value = '+07:00';
+          }
+        }
+        var gain = (res && res.gainMode) ? String(res.gainMode) : 'auto';
+        var selGain = document.getElementById('setGainMode');
+        if (selGain) {
+          selGain.value = gain;
+          if (selGain.value !== gain) {
+            selGain.value = 'auto';
+          }
+        }
+        var inSize = document.getElementById('setStaggerGroupSize');
+        var inStep = document.getElementById('setStaggerStepS');
+        inSize.value = (res && res.staggerGroupSize != null) ? res.staggerGroupSize : 3;
+        inStep.value = (res && res.staggerStepS != null) ? res.staggerStepS : 10;
+        if (res && res.staggerGroupSizeMin) { inSize.min = res.staggerGroupSizeMin; }
+        if (res && res.staggerGroupSizeMax) { inSize.max = res.staggerGroupSizeMax; }
+        if (res && res.staggerStepMin) { inStep.min = res.staggerStepMin; }
+        if (res && res.staggerStepMax) { inStep.max = res.staggerStepMax; }
+        updateStaggerPreview();
+        document.getElementById('dlgSet1').showModal();
+      }
+
+      var fallback = {
+        maxAge: 900, batteryLow: 3.5, intervalS: 300, intervalMin: 10, intervalMax: 3600,
+        timezone: '+07:00', gainMode: 'auto', staggerGroupSize: 3, staggerStepS: 10
+      };
+
+      if (!hasAppsScript()) {
+        show(fallback);
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(show)
+        .withFailureHandler(function (err) {
+          showToast('Gagal memuat pengaturan: ' + err.message);
+          show(fallback);
+        })
+        .getDashboardSettings();
+    }
+
+    function runSaveSettings() {
+      var maxAge = Number(document.getElementById('setMaxAge').value);
+      var batteryLow = Number(document.getElementById('setBatteryLow').value);
+      var intervalS = Number(document.getElementById('setIntervalS').value);
+      var timezone = document.getElementById('setTimezone').value;
+      var gainMode = document.getElementById('setGainMode').value || 'auto';
+      var staggerGroupSize = Number(document.getElementById('setStaggerGroupSize').value);
+      var staggerStepS = Number(document.getElementById('setStaggerStepS').value);
+      var text = document.getElementById('confirmSet').value.trim();
+      document.getElementById('btnSet2Go').disabled = true;
+
+      function onResult(res) {
+        if (!res || !res.ok) {
+          showToast((res && res.message) || 'Simpan pengaturan gagal.');
+          updateSetReady();
+          return;
+        }
+        document.getElementById('dlgSet2').close();
+        if (res.timezone) {
+          g_chartTimezone = String(res.timezone);
+        }
+        showToast(res.message);
+        load();
+      }
+
+      if (!hasAppsScript()) {
+        onResult({
+          ok: true,
+          message: 'Simulasi lokal: pengaturan tidak tersimpan ke Sheet.',
+          maxAge: maxAge,
+          batteryLow: batteryLow,
+          intervalS: intervalS,
+          timezone: timezone,
+          gainMode: gainMode,
+          staggerGroupSize: staggerGroupSize,
+          staggerStepS: staggerStepS
+        });
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(onResult)
+        .withFailureHandler(function (err) {
+          showToast('Gagal simpan pengaturan: ' + err.message);
+          updateSetReady();
+        })
+        .setDashboardSettings(maxAge, batteryLow, intervalS, timezone, gainMode,
+          staggerGroupSize, staggerStepS, text);
+    }
+
+    /* ========== DEMO (preview tanpa Apps Script) ========== */
+    function demoDashboard() {
+      return {
+        summary: { total: 5, ok: 2, warn: 1, error: 0, offline: 2 },
+        nodes: [
+          { id: 'A-01', jenis: 'Iluminansi', status: 'OK', nilai: 'Lux 312 | valid 1', battery: 3.92, age: 40, lastUtc: '2026-09-21T15:00:00+07:00', firmware: '2.1.0', sensorStatus: 0, action: 'Normal.' },
+          { id: 'A-02', jenis: 'Iluminansi', status: 'TERLAMBAT', nilai: 'Lux 148 | valid 1', battery: 3.81, age: 400, lastUtc: '2026-09-21T14:40:00+07:00', firmware: '2.1.0', sensorStatus: 0, action: 'Cek WiFi.' },
+          { id: 'B-01', jenis: 'IAQ', status: 'OK', nilai: 'T 24.1 C | RH 58 % | CO2 720 ppm', battery: 3.88, age: 35, lastUtc: '2026-09-21T15:00:00+07:00', firmware: '2.1.0', sensorStatus: 0, action: 'Normal.' },
+          { id: 'B-02', jenis: 'IAQ', status: 'OK', nilai: 'T 25.0 C | RH 55 % | CO2 810 ppm', battery: 3.90, age: 50, lastUtc: '2026-09-21T15:00:00+07:00', firmware: '2.1.0', sensorStatus: 0, action: 'Normal.' },
+          { id: 'B-03', jenis: 'IAQ', status: 'BELUM ADA DATA', nilai: '', battery: '', age: '', lastUtc: '', firmware: '', sensorStatus: '', action: 'Belum pernah mengirim.' }
+        ]
+      };
+    }
+
+    function demoDashboardEmpty() {
+      var d = demoDashboard();
+      d.summary = { total: 5, ok: 0, warn: 0, error: 0, offline: 5 };
+      d.nodes = d.nodes.map(function (n) {
+        return {
+          id: n.id,
+          jenis: n.jenis,
+          status: 'BELUM ADA DATA',
+          nilai: '',
+          battery: '',
+          age: '',
+          lastUtc: '',
+          firmware: '',
+          sensorStatus: '',
+          action: 'Belum pernah mengirim. Data dimulai dari awal.'
+        };
+      });
+      return d;
+    }
+
+    function demoChart(nodeId, range) {
+      var labels = [];
+      var a = [];
+      var b = [];
+      var c = [];
+      var batt = [];
+      var fromMs = range && range.from ? new Date(range.from).getTime() : Date.now() - 3600000;
+      var toMs = range && range.to ? new Date(range.to).getTime() : Date.now();
+      if (isNaN(fromMs) || isNaN(toMs) || toMs < fromMs) {
+        fromMs = Date.now() - 3600000;
+        toMs = Date.now();
+      }
+      var step = 5 * 60 * 1000;
+      var i = 0;
+      for (var t = fromMs; t <= toMs && i < 48; t += step, i++) {
+        var d = new Date(t);
+        var tz = getChartTimezoneSuffix();
+        labels.push(
+          d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+          'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':00' + tz
+        );
+        a.push(280 + Math.sin(i / 4) * 40 + (i % 7));
+        b.push(24 + Math.sin(i / 6) * 1.5);
+        c.push(55 + Math.cos(i / 5) * 8);
+        batt.push(3.95 - i * 0.002);
+      }
+      if (nodeId.charAt(0) === 'A') {
+        return {
+          nodeId: nodeId,
+          jenis: 'Iluminansi',
+          labels: labels,
+          series: { illuminance: a, battery: batt },
+          from: range && range.from ? range.from : '',
+          to: range && range.to ? range.to : '',
+          truncated: false,
+          totalMatched: labels.length
+        };
+      }
+      return {
+        nodeId: nodeId,
+        jenis: 'IAQ',
+        labels: labels,
+        series: {
+          temperature: b,
+          humidity: c,
+          co2: a.map(function (v) { return 700 + v; }),
+          battery: batt
+        },
+        from: range && range.from ? range.from : '',
+        to: range && range.to ? range.to : '',
+        truncated: false,
+        totalMatched: labels.length
+      };
+    }
+
+    /* ========== EVENTS ========== */
+    document.querySelectorAll('.nav-tabs button').forEach(function (btn) {
+      btn.onclick = function () {
+        setView(btn.getAttribute('data-view'));
+      };
+    });
+
+    document.querySelectorAll('.filters button').forEach(function (btn) {
+      btn.onclick = function () {
+        document.querySelectorAll('.filters button').forEach(function (b) {
+          b.classList.remove('active');
+        });
+        btn.classList.add('active');
+        g_filter = btn.getAttribute('data-filter');
+        render();
+      };
+    });
+
+    document.getElementById('btnLoadChart').onclick = loadChart;
+
+    document.getElementById('btnDetailChart').onclick = function () {
+      document.getElementById('detail').close();
+      if (g_selectedDetailId) {
+        document.getElementById('chartNode').value = g_selectedDetailId;
+      }
+      setView('charts');
+      loadChart();
+    };
+
+    document.getElementById('btnSaveCalib').onclick = openCalibConfirm;
+    document.getElementById('btnCalibCancel').onclick = function () {
+      document.getElementById('dlgCalibConfirm').close();
+    };
+    document.getElementById('btnCalibGo').onclick = runSaveCalibration;
+
+    document.getElementById('btnDeleteAll').onclick = function () {
+      document.getElementById('dlgDelete1').showModal();
+    };
+    document.getElementById('btnDel1Cancel').onclick = function () {
+      document.getElementById('dlgDelete1').close();
+    };
+    document.getElementById('btnDel1Next').onclick = function () {
+      document.getElementById('dlgDelete1').close();
+      document.getElementById('confirmDelete').value = '';
+      document.getElementById('ackDelete').checked = false;
+      updateDeleteReady();
+      document.getElementById('dlgDelete2').showModal();
+    };
+    document.getElementById('btnDel2Back').onclick = function () {
+      document.getElementById('dlgDelete2').close();
+      document.getElementById('dlgDelete1').showModal();
+    };
+    document.getElementById('confirmDelete').oninput = updateDeleteReady;
+    document.getElementById('ackDelete').onchange = updateDeleteReady;
+    document.getElementById('btnDel2Go').onclick = runDelete;
+
+    document.getElementById('btnScriptUrl').onclick = openUrlDialog;
+    document.getElementById('btnUrl1Cancel').onclick = function () {
+      document.getElementById('dlgUrl1').close();
+    };
+    document.getElementById('btnUrl1Next').onclick = function () {
+      var url = document.getElementById('scriptUrlInput').value.trim();
+      if (url.indexOf('https://script.google.com/') !== 0 || url.indexOf('/exec') < 0) {
+        showToast('Link harus https://script.google.com/.../exec');
+        return;
+      }
+      document.getElementById('dlgUrl1').close();
+      document.getElementById('confirmUrl').value = '';
+      document.getElementById('ackUrl').checked = false;
+      updateUrlReady();
+      document.getElementById('dlgUrl2').showModal();
+    };
+    document.getElementById('btnUrl2Back').onclick = function () {
+      document.getElementById('dlgUrl2').close();
+      document.getElementById('dlgUrl1').showModal();
+    };
+    document.getElementById('confirmUrl').oninput = updateUrlReady;
+    document.getElementById('ackUrl').onchange = updateUrlReady;
+    document.getElementById('btnUrl2Go').onclick = runSaveUrl;
+
+    document.getElementById('btnFirmwareVersion').onclick = openVersionDialog;
+    document.getElementById('btnVer1Cancel').onclick = function () {
+      document.getElementById('dlgVer1').close();
+    };
+    document.getElementById('btnVer1Next').onclick = function () {
+      var version = document.getElementById('firmwareVersionInput').value.trim();
+      if (!/^[0-9]+(\.[0-9]+)+$/.test(version)) {
+        showToast('Versi harus seperti 1.9.0');
+        return;
+      }
+      document.getElementById('dlgVer1').close();
+      document.getElementById('confirmVer').value = '';
+      document.getElementById('ackVer').checked = false;
+      updateVerReady();
+      document.getElementById('dlgVer2').showModal();
+    };
+    document.getElementById('btnVer2Back').onclick = function () {
+      document.getElementById('dlgVer2').close();
+      document.getElementById('dlgVer1').showModal();
+    };
+    document.getElementById('confirmVer').oninput = updateVerReady;
+    document.getElementById('ackVer').onchange = updateVerReady;
+    document.getElementById('btnVer2Go').onclick = runSaveVersion;
+
+    document.getElementById('btnSettings').onclick = openSettingsDialog;
+    document.getElementById('setStaggerGroupSize').oninput = updateStaggerPreview;
+    document.getElementById('setStaggerStepS').oninput = updateStaggerPreview;
+    document.getElementById('setIntervalS').addEventListener('input', updateStaggerPreview);
+    document.getElementById('btnSet1Cancel').onclick = function () {
+      document.getElementById('dlgSet1').close();
+    };
+    document.getElementById('btnSet1Next').onclick = function () {
+      var maxAge = Number(document.getElementById('setMaxAge').value);
+      var batteryLow = Number(document.getElementById('setBatteryLow').value);
+      var intervalS = Number(document.getElementById('setIntervalS').value);
+      var timezone = document.getElementById('setTimezone').value;
+      var gainMode = document.getElementById('setGainMode').value;
+      if (isNaN(maxAge) || maxAge < 10 || maxAge > 86400) {
+        showToast('Batas usia harus 10–86400 detik');
+        return;
+      }
+      if (isNaN(batteryLow) || batteryLow < 2.5 || batteryLow > 5) {
+        showToast('Baterai low harus 2.50–5.00 V');
+        return;
+      }
+      if (isNaN(intervalS) || intervalS < 10 || intervalS > 3600) {
+        showToast('Interval harus 10–3600 detik');
+        return;
+      }
+      if (timezone !== '+07:00' && timezone !== '+08:00' && timezone !== '+09:00') {
+        showToast('Timezone harus WIB, WITA, atau WIT');
+        return;
+      }
+      if (gainMode !== 'auto' && gainMode !== '2' && gainMode !== '1' && gainMode !== '1_4' && gainMode !== '1_8') {
+        showToast('Mode gain harus Autorange, 2x, 1x, 1/4x, atau 1/8x');
+        return;
+      }
+      var staggerGroupSize = Number(document.getElementById('setStaggerGroupSize').value);
+      if (isNaN(staggerGroupSize) || Math.round(staggerGroupSize) !== staggerGroupSize ||
+          staggerGroupSize < 1 || staggerGroupSize > 25) {
+        showToast('Jumlah alat per rombongan harus bilangan bulat 1–25');
+        return;
+      }
+      var staggerStepS = Number(document.getElementById('setStaggerStepS').value);
+      if (isNaN(staggerStepS) || Math.round(staggerStepS) !== staggerStepS ||
+          staggerStepS < 1 || staggerStepS > 120) {
+        showToast('Jeda antar rombongan harus bilangan bulat 1–120 detik');
+        return;
+      }
+      document.getElementById('dlgSet1').close();
+      document.getElementById('confirmSet').value = '';
+      document.getElementById('ackSet').checked = false;
+      updateSetReady();
+      document.getElementById('dlgSet2').showModal();
+    };
+    document.getElementById('btnSet2Back').onclick = function () {
+      document.getElementById('dlgSet2').close();
+      document.getElementById('dlgSet1').showModal();
+    };
+    document.getElementById('confirmSet').oninput = updateSetReady;
+    document.getElementById('ackSet').onchange = updateSetReady;
+    document.getElementById('btnSet2Go').onclick = runSaveSettings;
+
+    // Interval update realtime HMI (V2.5.0: 20 detik, sebelumnya 10 detik).
+    // Label "Live · N dtk" di applyData ikut dari nilai ini.
+    var POLL_MS = 20000;
+    var g_pollTimer = null;
+
+    function stopPolling() {
+      if (g_pollTimer !== null) {
+        clearInterval(g_pollTimer);
+        g_pollTimer = null;
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      g_pollTimer = setInterval(function () {
+        if (document.hidden) {
+          return;
+        }
+        load();
+      }, POLL_MS);
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        stopPolling();
+        return;
+      }
+      // Tab aktif lagi: muat segera, lalu lanjut poll.
+      load();
+      startPolling();
+    });
+
+    initChartRangeDefaults();
+    var g_initialData = readInitialData();
+    if (g_initialData && g_initialData.summary && g_initialData.nodes) {
+      applyData(g_initialData);
+    } else {
+      load();
+    }
+    startPolling();
+  </script>
+</body>
+</html>
